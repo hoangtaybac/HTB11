@@ -1,4 +1,4 @@
-"""HTB11 v2.9 compatibility layer.
+"""HTB11 v2.9.1 compatibility layer.
 
 Giữ nguyên backend api.py hiện tại nhưng thay các hàm nhận dạng vùng hệ phương
 trình bằng phiên bản ổn định hơn. Railway khởi động module này qua Dockerfile.
@@ -8,13 +8,14 @@ from typing import Any, Dict, List, Optional
 
 import api as core
 
+# Lưu tham chiếu tới hàm gốc TRƯỚC khi monkey-patch.
+# Nếu gọi core._clean_ocr_text sau khi đã gán lại, Python sẽ gọi chính wrapper
+# này vô hạn và phát sinh "maximum recursion depth exceeded".
+_ORIGINAL_CLEAN_OCR_TEXT = core._clean_ocr_text
+
 
 def _inject_anchored_system_regions(lines: List[Dict[str, Any]], page_width: int) -> List[Dict[str, Any]]:
-    """Cắt toàn bộ vùng 2D nằm sau nhãn 'Giải hệ phương trình'.
-
-    Bản cũ cắt quá hẹp nên thường mất ngoặc nhọn, mẫu số hoặc phương trình cuối.
-    Bản này lấy rộng hơn nhưng dừng trước TS lớp, ĐS và số bài tiếp theo.
-    """
+    """Cắt toàn bộ vùng 2D nằm sau nhãn 'Giải hệ phương trình'."""
     if not lines:
         return []
     original = sorted((dict(x) for x in lines), key=lambda x: (x["bbox"][1], x["bbox"][0]))
@@ -117,12 +118,14 @@ def _restore_vietnamese_proper_nouns(text: str) -> str:
 
 
 def _clean_ocr_text(text: str) -> str:
-    return _restore_vietnamese_proper_nouns(core._clean_ocr_text(text))
+    # Gọi đúng hàm gốc đã lưu, không gọi core._clean_ocr_text sau monkey-patch.
+    cleaned = _ORIGINAL_CLEAN_OCR_TEXT(text)
+    return _restore_vietnamese_proper_nouns(cleaned)
 
 
 def _clean_system_ocr_text(text: str) -> str:
     value = (text or "").replace("−", "-").replace("×", r"\times ")
-    value = re.sub(r"(?i)\b(?:giai|giải)\s+(?:he|hệ)\s+(?:phuong|phương)\s+(?:trinh|trình)\s*: ?", "", value)
+    value = re.sub(r"(?i)\b(?:giai|giải)\s+(?:he|hệ)\s+(?:phuong|phương)\s+(?:trinh|trình)\s*:?", "", value)
     value = re.sub(r"(?i)\bTS\s+(?:lop|lớp)\b.*$", "", value)
     value = re.sub(r"(?i)\b(?:DS|ĐS|Dap\s+so|Đáp\s+số)\b.*$", "", value)
     return value.strip()
@@ -178,6 +181,6 @@ core._equations_from_ocr_text = _equations_from_ocr_text
 core._fallback_system_latex = _fallback_system_latex
 core._normalize_system_latex = _normalize_system_latex
 core._recognize_system_formula = _recognize_system_formula
-core.app.version = "2.9.0"
+core.app.version = "2.9.1"
 
 app = core.app

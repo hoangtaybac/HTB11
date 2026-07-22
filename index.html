@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HTB11 - OCR Toán</title>
+<script>
+window.MathJax={
+  tex:{inlineMath:[['$','$'],['\\(','\\)']],displayMath:[['$$','$$'],['\\[','\\]']],packages:{'[+]':['ams']}},
+  svg:{fontCache:'global'},startup:{typeset:false}
+};
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f7fb;color:#172033;font-family:Arial,Roboto,sans-serif}.wrap{max-width:1180px;margin:auto;padding:22px}.card{background:#fff;border:1px solid #dce4f1;border-radius:20px;padding:18px;margin-bottom:16px;box-shadow:0 12px 35px rgba(15,23,42,.08)}h1{margin:0 0 12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:block;font-weight:700;margin:10px 0 6px}input,textarea{width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:12px;font-size:15px}.drop{padding:22px;border:2px dashed #93a4c4;border-radius:16px;text-align:center;cursor:pointer;background:#f8fbff}.row{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}button{border:0;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer}.main{background:#2563eb;color:#fff}.light{background:#eaf1ff;color:#1d4ed8}.tabs{display:flex;gap:8px;margin-bottom:10px}.tab.active{background:#172033;color:#fff}.panel{display:none}.panel.active{display:block}.output{min-height:600px;border:1px solid #dce4f1;border-radius:14px;padding:14px;overflow:auto;background:#fbfdff;line-height:1.45}.preview mjx-container[display="true"]{overflow-x:auto;margin:.6em 0!important}.status{padding:12px;margin-top:12px;border-radius:12px;background:#f1f5f9}.ok{color:#15803d;font-weight:700}.err{color:#dc2626;font-weight:700}@media(max-width:850px){.grid{grid-template-columns:1fr}.output{min-height:380px}}
+</style>
+</head>
+<body><div class="wrap">
+<div class="card"><h1>HTB11 – Chuyển PDF/ảnh sang công thức toán</h1><div class="grid"><div>
+<label>API Railway</label><input id="api" value="https://htb11-production.up.railway.app/ocr">
+<label>Chọn PDF hoặc ảnh</label><div class="drop" id="drop">Bấm hoặc kéo thả file vào đây<input id="file" type="file" accept="application/pdf,image/*" hidden></div><div id="name"></div>
+<div class="row"><button class="main" id="run">Chuyển đổi</button><button class="light" id="clear">Xóa</button></div><div class="status" id="status">Sẵn sàng.</div>
+</div><div><b>Lưu ý:</b><p>Hệ phương trình, tích phân, nguyên hàm, phân số và số mũ được nhận dạng theo vùng toán 2 chiều. PDF dài tự chia batch.</p></div></div></div>
+<div class="card"><div class="tabs"><button class="tab active" data-panel="preview">Xem trước</button><button class="tab" data-panel="text">Text/LaTeX</button><button class="tab" data-panel="json">JSON</button></div>
+<div id="preview" class="panel active"><div id="previewBox" class="output preview">Kết quả sẽ hiện ở đây.</div></div>
+<div id="text" class="panel"><textarea id="textBox" class="output"></textarea></div>
+<div id="json" class="panel"><textarea id="jsonBox" class="output"></textarea></div></div>
+</div>
+<script>
+const $=id=>document.getElementById(id),file=$('file'),drop=$('drop'),status=$('status');
+drop.onclick=()=>file.click();drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();file.files=e.dataTransfer.files;showName()};file.onchange=showName;
+function showName(){$('name').textContent=file.files[0]?file.files[0].name:'Chưa chọn file'}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.panel).classList.add('active')});
+function normalizeMath(s){
+ s=String(s||'');
+ s=s.replace(/\\left\s*\\\{\s*\\begin\{array\}(?:\{[^}]*\})?/g,'\\begin{cases}').replace(/\\end\{array\}\s*\\right\s*[.}]?/g,'\\end{cases}');
+ const env='cases|aligned|alignedat|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|gathered|split';
+ return s.replace(new RegExp('(?<!\\$)(\\\\begin\\{('+env+')\\}[\\s\\S]*?\\\\end\\{\\2\\})(?!\\$)','g'),'$$$$$1$$$$');
+}
+function protectMath(source){
+ const store=[];let s=normalizeMath(source);const put=m=>{const i=store.push(m)-1;return '@@MATH_'+i+'@@'};
+ s=s.replace(/\\begin\{(cases|aligned|alignedat|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix|gathered|split)\}[\s\S]*?\\end\{\1\}/g,m=>put('$$'+m+'$$'));
+ s=s.replace(/\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]/g,put);
+ s=s.replace(/\\\([^\n]*?\\\)|(?<!\$)\$(?!\$)[^\n$]+?\$(?!\$)/g,put);
+ return {text:s,restore:h=>h.replace(/@@MATH_(\d+)@@/g,(_,i)=>store[+i]||'')};
+}
+async function typeset(){if(window.MathJax?.startup?.promise)await MathJax.startup.promise;if(MathJax.typesetClear)MathJax.typesetClear([$('previewBox')]);await MathJax.typesetPromise([$('previewBox')])}
+$('run').onclick=async()=>{const f=file.files[0];if(!f)return status.innerHTML='<span class="err">Chưa chọn file.</span>';let url=$('api').value.trim();if(!url)return;status.textContent='Đang OCR...';$('run').disabled=true;try{const form=new FormData();form.append('file',f);url+=(url.includes('?')?'&':'?')+'include_page_results=false&batch_size=10';const r=await fetch(url,{method:'POST',body:form});const d=await r.json();if(!r.ok)throw Error(d.detail||'API lỗi');const content=d.cleaned_text||d.text||'';$('textBox').value=content;$('jsonBox').value=JSON.stringify(d,null,2);const p=protectMath(content);let h=marked.parse(p.text,{breaks:true,gfm:true});h=h.replace(/<p>\s*(@@MATH_\d+@@)\s*<\/p>/g,'$1');$('previewBox').innerHTML=p.restore(h)||'Không có nội dung';await typeset();status.innerHTML='<span class="ok">Đã xong: '+(d.pages||0)+' trang, '+(d.formula_count||0)+' công thức.</span>'}catch(e){status.innerHTML='<span class="err">'+e.message+'</span>'}finally{$('run').disabled=false}};
+$('clear').onclick=()=>{file.value='';showName();$('previewBox').textContent='Kết quả sẽ hiện ở đây.';$('textBox').value='';$('jsonBox').value='';status.textContent='Sẵn sàng.'};
+</script></body></html>

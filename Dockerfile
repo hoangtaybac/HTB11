@@ -10,12 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MAX_PAGES=0 \
     OCR_CPU_THREADS=1 \
     OCR_MIN_CONFIDENCE=0.30 \
-    FORMULA_MAX_WIDTH=2200 \
+    FORMULA_MAX_WIDTH=2400 \
     FORMULA_OCR_MODE=balanced \
     FORMULA_EARLY_ACCEPT_SCORE=42 \
     GC_EVERY_PAGES=5 \
     AUTO_BATCH_PAGES=10 \
-    FORMULA_MIN_HEIGHT=190 \
+    FORMULA_MIN_HEIGHT=200 \
     FORMULA_CACHE_SIZE=512 \
     MAX_UPLOAD_BYTES=524288000 \
     FLAGS_use_mkldnn=0 \
@@ -40,4 +40,4 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
 
 COPY . .
 
-CMD ["sh", "-c", "uvicorn api:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "uvicorn api_v28:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

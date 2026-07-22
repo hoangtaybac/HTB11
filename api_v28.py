@@ -1,24 +1,19 @@
-"""HTB11 v2.10.0 compatibility layer.
+"""HTB11 v2.10.1 compatibility layer.
 
-Tăng độ ổn định khi nhận dạng hệ phương trình có phân số, trị tuyệt đối và căn.
-Railway khởi động module này qua Dockerfile.
+Sửa lỗi ``bad escape \\e`` khi chuẩn hóa LaTeX và giữ các cải tiến nhận dạng
+hệ phương trình có phân số, trị tuyệt đối và căn thức.
 """
 import re
 from typing import Any, Dict, List, Optional
 
 import api as core
 
-# Lưu hàm gốc trước khi monkey-patch để tránh đệ quy vô hạn.
+# Lưu hàm gốc trước khi monkey-patch để tránh đệ quy.
 _ORIGINAL_CLEAN_OCR_TEXT = core._clean_ocr_text
 _ORIGINAL_RECOGNIZE_FORMULA = core._recognize_formula
 
 
 def _inject_anchored_system_regions(lines: List[Dict[str, Any]], page_width: int) -> List[Dict[str, Any]]:
-    """Cắt đúng vùng 2D sau nhãn “Giải hệ phương trình”.
-
-    Không dùng tiêu đề chương làm mỏ neo. Chỉ tạo vùng hệ khi tìm được ít nhất hai
-    mảnh toán, đồng thời dừng trước TS lớp, ĐS và số bài kế tiếp.
-    """
     if not lines:
         return []
     original = sorted((dict(x) for x in lines), key=lambda x: (x["bbox"][1], x["bbox"][0]))
@@ -34,27 +29,23 @@ def _inject_anchored_system_regions(lines: List[Dict[str, Any]], page_width: int
         folded = core._ascii_fold(anchor_text)
         if "he phuong trinh" not in folded:
             continue
-        # Loại tiêu đề “Chủ đề 4. Hệ phương trình” và dòng mục lớn.
         if "chu de" in folded or ("giai he phuong trinh" in folded and len(anchor_text) > 42):
             continue
 
         _, ay1, ax2, ay2 = anchor["bbox"]
         h = max(8.0, ay2 - ay1)
-        # Lùi sang trái đủ để giữ toàn bộ ngoặc hệ; không ăn lại phần chữ nhãn.
         left = max(0.0, min(page_width - 30.0, ax2 - h * 0.45))
         right = min(page_width * 0.82, left + page_width * 0.48)
         top = max(0.0, ay1 - h * 0.55)
         bottom = min(ay1 + h * 8.5, ay1 + page_width * 0.34)
 
-        for k in range(ai + 1, len(original)):
-            item = original[k]
+        for item in original[ai + 1:]:
             bx1, by1, _, _ = item["bbox"]
             if by1 <= ay2 + h * 0.20:
                 continue
             txt = (item.get("text") or "").strip()
             folded_txt = core._ascii_fold(txt)
-            is_stop = bool(stop_re.match(txt)) or folded_txt.startswith(("ts lop", "ds", "dap so"))
-            if is_stop and bx1 < page_width * 0.82:
+            if (stop_re.match(txt) or folded_txt.startswith(("ts lop", "ds", "dap so"))) and bx1 < page_width * 0.82:
                 bottom = min(bottom, by1 - h * 0.12)
                 break
 
@@ -71,11 +62,9 @@ def _inject_anchored_system_regions(lines: List[Dict[str, Any]], page_width: int
                     continue
                 selected.append((k, item))
 
-        # Không tạo vùng rỗng hoặc chỉ có một mẩu x/y rời.
         relation_parts = sum(1 for _, x in selected if re.search(r"=|≤|≥|<|>", x.get("text", "")))
         if len(selected) < 2 and relation_parts < 2:
             continue
-
         for k, _ in selected:
             consumed.add(k)
         synthetic.append({
@@ -99,14 +88,29 @@ def _normalize_system_latex(latex: str) -> str:
     value = re.sub(r"\$+", "", value).strip()
     value = re.sub(r"\\left\s*\\\{\s*", "", value)
     value = re.sub(r"\\right\s*[.}]?\s*$", "", value)
-    value = re.sub(r"\\begin\{array\}(?:\{[^}]*\})?", r"\\begin{cases}", value)
-    value = value.replace(r"\end{array}", r"\end{cases}")
-    value = re.sub(r"\\begin\{aligned\}", r"\\begin{cases}", value)
-    value = re.sub(r"\\end\{aligned\}", r"\\end{cases}", value)
 
-    # Chuẩn hóa trị tuyệt đối và căn để MathJax/Word không làm mất ký hiệu.
-    value = re.sub(r"(?<!\\)\|\s*([^|]+?)\s*\|", r"\\left|\1\\right|", value)
-    value = re.sub(r"\\sqrt\s+([A-Za-z0-9]+)", r"\\sqrt{\1}", value)
+    # Dùng lambda để chuỗi LaTeX không bị parser replacement của re.sub hiểu
+    # nhầm \end thành escape \e (nguyên nhân lỗi bad escape \e).
+    value = re.sub(
+        r"\\begin\{array\}(?:\{[^}]*\})?",
+        lambda _: r"\begin{cases}",
+        value,
+    )
+    value = value.replace(r"\end{array}", r"\end{cases}")
+    value = re.sub(r"\\begin\{aligned\}", lambda _: r"\begin{cases}", value)
+    value = re.sub(r"\\end\{aligned\}", lambda _: r"\end{cases}", value)
+
+    # Chuẩn hóa trị tuyệt đối và căn bằng callback, không dùng replacement có \l, \r, \s.
+    value = re.sub(
+        r"(?<!\\)\|\s*([^|]+?)\s*\|",
+        lambda m: r"\left|" + m.group(1) + r"\right|",
+        value,
+    )
+    value = re.sub(
+        r"\\sqrt\s+([A-Za-z0-9]+)",
+        lambda m: r"\sqrt{" + m.group(1) + "}",
+        value,
+    )
 
     if r"\begin{cases}" not in value and len(re.findall(r"=|\\le|\\ge|\\neq|<|>", value)) >= 2:
         rows = [x.strip() for x in re.split(r"\\\\|\n", value) if x.strip()]
@@ -127,7 +131,7 @@ _VI_PROPER_NOUN_PATTERNS = [
 def _restore_vietnamese_proper_nouns(text: str) -> str:
     value = text or ""
     for pattern, replacement in _VI_PROPER_NOUN_PATTERNS:
-        value = re.sub(pattern, replacement, value)
+        value = re.sub(pattern, lambda _m, replacement=replacement: replacement, value)
     return value
 
 
@@ -144,11 +148,6 @@ def _clean_system_ocr_text(text: str) -> str:
 
 
 def _equations_from_ocr_text(text: str) -> List[str]:
-    """Fallback chỉ dùng với hai phương trình tuyến tính sạch.
-
-    Không ghép các mẩu phân số rời (3, 4, x, y), vì điều đó tạo kết quả sai nặng.
-    Hệ phân số/căn/trị tuyệt đối phải ưu tiên mô hình ảnh chuyên dụng.
-    """
     raw = _clean_system_ocr_text(text)
     equations: List[str] = []
     for value in re.split(r"\n+|\s{2,}", raw):
@@ -157,13 +156,11 @@ def _equations_from_ocr_text(text: str) -> List[str]:
             continue
         if re.search(r"(?i)\b(?:TS|DS|ĐS|lop|lớp)\b", value):
             continue
-        # Không fallback cho phân số/căn/trị tuyệt đối bị OCR tách vụn.
+        # Không ghép fallback với phân số/căn/trị tuyệt đối bị OCR tách vụn.
         if re.search(r"[/√]|\\frac|\\sqrt|\|", value):
             continue
         value = re.sub(r"\s+", "", value)
         if not re.fullmatch(r"[0-9A-Za-z+\-().=^]+", value):
-            continue
-        if len(re.findall(r"[A-Za-z]", value)) < 1:
             continue
         if 3 <= len(value) <= 100 and value not in equations:
             equations.append(value)
@@ -178,26 +175,19 @@ def _fallback_system_latex(text: str) -> Optional[str]:
 
 
 def _tighten_system_crop(crop):
-    """Cắt mép trắng, giữ ngoặc hệ và thêm viền để pix2tex nhìn rõ cấu trúc 2D."""
     try:
-        from PIL import Image, ImageChops, ImageEnhance, ImageFilter, ImageOps
-        img = crop.convert("L")
-        # Làm tương phản nhẹ, không threshold mạnh để giữ dấu căn và vạch phân số.
-        img = ImageEnhance.Contrast(img).enhance(1.35)
+        from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+        img = ImageEnhance.Contrast(crop.convert("L")).enhance(1.35)
         inv = ImageOps.invert(img)
         bbox = inv.point(lambda p: 255 if p > 28 else 0).getbbox()
         if bbox:
             x1, y1, x2, y2 = bbox
-            pad_x, pad_y = 30, 24
-            x1, y1 = max(0, x1 - pad_x), max(0, y1 - pad_y)
-            x2, y2 = min(img.width, x2 + pad_x), min(img.height, y2 + pad_y)
-            img = img.crop((x1, y1, x2, y2))
+            img = img.crop((max(0, x1 - 30), max(0, y1 - 24), min(img.width, x2 + 30), min(img.height, y2 + 24)))
         img = ImageOps.expand(img, border=(42, 30, 42, 30), fill=255)
         if img.height < 260:
             scale = 260.0 / max(1, img.height)
             img = img.resize((max(80, int(img.width * scale)), 260), Image.Resampling.LANCZOS)
-        img = img.filter(ImageFilter.SHARPEN)
-        return img.convert("RGB")
+        return img.filter(ImageFilter.SHARPEN).convert("RGB")
     except Exception:
         return crop
 
@@ -213,10 +203,8 @@ def _system_complexity(crop, ocr_text: str) -> Dict[str, bool]:
         import numpy as np
         arr = np.asarray(crop.convert("L")) < 105
         if arr.size:
-            # Nhiều đoạn ngang ngắn ở hai cao độ khác nhau thường là vạch phân số.
             row_counts = arr.sum(axis=1)
-            strong_rows = int((row_counts > max(16, arr.shape[1] * 0.10)).sum())
-            flags["fraction"] = flags["fraction"] or strong_rows >= 4
+            flags["fraction"] = flags["fraction"] or int((row_counts > max(16, arr.shape[1] * 0.10)).sum()) >= 4
     except Exception:
         pass
     return flags
@@ -229,7 +217,6 @@ def _system_latex_is_valid(latex: str, complexity: Dict[str, bool]) -> bool:
     rows = [x for x in re.split(r"\\\\|\n", latex) if re.search(r"=|\\le|\\ge|\\neq|<|>", x)]
     if relation_count < 2 or len(rows) < 2:
         return False
-    # Loại kết quả bảng x/y hoặc chuỗi mẩu rời.
     if re.search(r"\\begin\{(?:array|matrix|tabular)\}.*?\bx\b.*?\\\\.*?\by\b", latex, re.S):
         return False
     compact = re.sub(r"\s+", "", latex)
@@ -245,19 +232,11 @@ def _system_latex_is_valid(latex: str, complexity: Dict[str, bool]) -> bool:
 def _recognize_system_formula(crop, ocr_text: str = "") -> Optional[str]:
     prepared = _tighten_system_crop(crop)
     complexity = _system_complexity(prepared, ocr_text)
-
-    # Thử ảnh đã cắt sát trước; nếu chưa đạt mới thử ảnh gốc.
-    candidates = []
     for candidate_crop in (prepared, crop):
         latex = _ORIGINAL_RECOGNIZE_FORMULA(candidate_crop, structural=True)
         latex = _normalize_system_latex(latex or "")
-        if latex:
-            candidates.append(latex)
-            if _system_latex_is_valid(latex, complexity):
-                return latex
-
-    # Chỉ dùng fallback cho hệ tuyến tính sạch. Hệ phân số/căn/trị tuyệt đối không
-    # được ghép từ các mẩu OCR rời vì sẽ tạo nội dung sai như 3, 4, x, y.
+        if latex and _system_latex_is_valid(latex, complexity):
+            return latex
     fallback = _fallback_system_latex(ocr_text)
     if fallback and _system_latex_is_valid(fallback, {"fraction": False, "absolute": False, "radical": False}):
         return fallback
@@ -270,6 +249,6 @@ core._equations_from_ocr_text = _equations_from_ocr_text
 core._fallback_system_latex = _fallback_system_latex
 core._normalize_system_latex = _normalize_system_latex
 core._recognize_system_formula = _recognize_system_formula
-core.app.version = "2.10.0"
+core.app.version = "2.10.1"
 
 app = core.app

@@ -1,4 +1,4 @@
-"""HTB11 v2.8 compatibility layer.
+"""HTB11 v2.9 compatibility layer.
 
 Giữ nguyên backend api.py hiện tại nhưng thay các hàm nhận dạng vùng hệ phương
 trình bằng phiên bản ổn định hơn. Railway khởi động module này qua Dockerfile.
@@ -79,25 +79,6 @@ def _inject_anchored_system_regions(lines: List[Dict[str, Any]], page_width: int
     return result
 
 
-def _equations_from_ocr_text(text: str) -> List[str]:
-    """Dựng hệ từ OCR chữ khi pix2tex không đọc được toàn vùng."""
-    raw = (text or "").replace("−", "-").replace("×", r"\times ")
-    raw = re.sub(r"(?i)\b(?:giai|giải)\s+(?:he|hệ)\s+(?:phuong|phương)\s+(?:trinh|trình)\s*:?", "", raw)
-    candidates = re.split(r"\n+|\s{2,}|(?<==)\s+(?=[+\-]?[A-Za-z0-9])", raw)
-    equations: List[str] = []
-    for value in candidates:
-        value = value.strip(" ;,|{}[]")
-        if not value or "=" not in value:
-            continue
-        # Giữ phân số LaTeX và trị tuyệt đối; loại dòng đáp số/văn xuôi.
-        if core._natural_word_count(value) > 1 or re.search(r"(?i)\b(?:TS|DS|ĐS|lop|lớp)\b", value):
-            continue
-        value = re.sub(r"\s+", "", value)
-        if 3 <= len(value) <= 120 and value not in equations:
-            equations.append(value)
-    return equations[:4]
-
-
 def _normalize_system_latex(latex: str) -> str:
     value = core._repair_latex_delimiters(latex or "").strip()
     if not value:
@@ -116,6 +97,60 @@ def _normalize_system_latex(latex: str) -> str:
     return core._repair_latex_delimiters(value)
 
 
+_VI_PROPER_NOUN_PATTERNS = [
+    (r"(?i)\bda\s*nang\b", "Đà Nẵng"),
+    (r"(?i)\bda\s*na[nm]g\b", "Đà Nẵng"),
+    (r"(?i)\bđa\s*nang\b", "Đà Nẵng"),
+    (r"(?i)\bđa\s*năng\b", "Đà Nẵng"),
+    (r"(?i)\bđa\s*nắng\b", "Đà Nẵng"),
+    (r"(?i)\bbinh\s*thuan\b", "Bình Thuận"),
+    (r"(?i)\bbac\s*giang\b", "Bắc Giang"),
+    (r"(?i)\btphcm\b", "TPHCM"),
+]
+
+
+def _restore_vietnamese_proper_nouns(text: str) -> str:
+    value = text or ""
+    for pattern, replacement in _VI_PROPER_NOUN_PATTERNS:
+        value = re.sub(pattern, replacement, value)
+    return value
+
+
+def _clean_ocr_text(text: str) -> str:
+    return _restore_vietnamese_proper_nouns(core._clean_ocr_text(text))
+
+
+def _clean_system_ocr_text(text: str) -> str:
+    value = (text or "").replace("−", "-").replace("×", r"\times ")
+    value = re.sub(r"(?i)\b(?:giai|giải)\s+(?:he|hệ)\s+(?:phuong|phương)\s+(?:trinh|trình)\s*: ?", "", value)
+    value = re.sub(r"(?i)\bTS\s+(?:lop|lớp)\b.*$", "", value)
+    value = re.sub(r"(?i)\b(?:DS|ĐS|Dap\s+so|Đáp\s+số)\b.*$", "", value)
+    return value.strip()
+
+
+def _equations_from_ocr_text(text: str) -> List[str]:
+    """Dựng hệ từ OCR chữ khi pix2tex không đọc được toàn vùng."""
+    raw = _clean_system_ocr_text(text)
+    candidates = re.split(
+        r"\n+|\s{2,}|(?<=[0-9A-Za-z\)\]])\s+(?=[+\-]?(?:\d|[A-Za-z]|\\frac|\())",
+        raw,
+    )
+    equations: List[str] = []
+    for value in candidates:
+        value = value.strip(" ;,{}[]")
+        if not value or "=" not in value:
+            continue
+        if re.search(r"(?i)\b(?:TS|DS|ĐS|lop|lớp)\b", value):
+            continue
+        natural = core._natural_word_count(value)
+        if natural > 1 and not re.search(r"\\frac|/|[|√]", value):
+            continue
+        value = re.sub(r"\s+", "", value)
+        if 3 <= len(value) <= 160 and value not in equations:
+            equations.append(value)
+    return equations[:4]
+
+
 def _fallback_system_latex(text: str) -> Optional[str]:
     equations = _equations_from_ocr_text(text)
     if len(equations) < 2:
@@ -129,17 +164,20 @@ def _recognize_system_formula(crop, ocr_text: str = "") -> Optional[str]:
     if not latex:
         return fallback
     latex = _normalize_system_latex(latex)
-    if len(re.findall(r"=|\\le|\\ge|\\neq|<|>", latex)) < 2:
+    relation_count = len(re.findall(r"=|\\le|\\ge|\\neq|<|>", latex))
+    row_count = len(re.findall(r"\\\\", latex)) + (1 if relation_count else 0)
+    bad_table = bool(re.search(r"\\begin\{(?:array|matrix|tabular)\}.*?\bx\b.*?\\\\.*?\by\b", latex, re.S))
+    if relation_count < 2 or row_count < 2 or bad_table:
         return fallback
     return latex
 
 
-# Monkey-patch vào module api; các route đã đăng ký vẫn tra global tại module này.
 core._inject_anchored_system_regions = _inject_anchored_system_regions
+core._clean_ocr_text = _clean_ocr_text
 core._equations_from_ocr_text = _equations_from_ocr_text
 core._fallback_system_latex = _fallback_system_latex
 core._normalize_system_latex = _normalize_system_latex
 core._recognize_system_formula = _recognize_system_formula
-core.app.version = "2.8.0"
+core.app.version = "2.9.0"
 
 app = core.app
